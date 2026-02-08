@@ -4,7 +4,14 @@ import { cors } from 'hono/cors'
 type Bindings = {
   ORDINALSBOT_API_KEY?: string
   RECEIVE_ADDRESS?: string  // Default Bitcoin address to receive inscriptions
+  PAYMENT_ADDRESS?: string  // Stacks address to receive x402 payments
 }
+
+// Default payment address for x402
+const DEFAULT_PAYMENT_ADDRESS = 'SPKH9AWG0ENZ87J1X0PBD4HETP22G8W22AFNVF8K'
+
+// x402 service fee: 0.001 STX = 1000 microSTX
+const SERVICE_FEE_USTX = 1000
 
 type OrdinalNewsPayload = {
   p: 'ons'
@@ -228,10 +235,86 @@ app.get('/preview', (c) => {
   })
 })
 
+// x402 discovery for /inscribe endpoint
+app.get('/inscribe', (c) => {
+  const payTo = c.env.PAYMENT_ADDRESS || DEFAULT_PAYMENT_ADDRESS
+
+  return c.json({
+    x402Version: 1,
+    name: 'Inscribe x402 - Bitcoin News Inscriptions',
+    accepts: [
+      {
+        scheme: 'exact',
+        network: 'stacks',
+        maxAmountRequired: SERVICE_FEE_USTX.toString(),
+        resource: '/inscribe',
+        description: 'Inscribe news articles to Bitcoin via Ordinal News Standard. Articles appear on 1btc.news automatically.',
+        mimeType: 'application/json',
+        payTo,
+        maxTimeoutSeconds: 300,
+        asset: 'STX',
+        outputSchema: {
+          input: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'Article headline (required)' },
+              body: { type: 'string', description: 'Article content in markdown (optional if url provided)' },
+              url: { type: 'string', description: 'External source URL (optional if body provided)' },
+              author: { type: 'string', description: 'Author name (optional)' },
+              authorAddress: { type: 'string', description: 'Author Bitcoin address (optional)' },
+              receiveAddress: { type: 'string', description: 'Bitcoin address to receive inscription (optional, uses default)' },
+              fee: { type: 'integer', description: 'Sats/vbyte for inscription (default: 10)' },
+            },
+            required: ['title'],
+          },
+          output: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              orderId: { type: 'string', description: 'OrdinalsBot order ID' },
+              payment: {
+                type: 'object',
+                properties: {
+                  amount: { type: 'integer', description: 'Satoshis to pay for inscription' },
+                  address: { type: 'string', description: 'Bitcoin address for payment' },
+                  lightning: { type: 'string', description: 'Lightning invoice' },
+                },
+              },
+              inscription: {
+                type: 'object',
+                properties: {
+                  receiveAddress: { type: 'string' },
+                  content: { type: 'object', description: 'ONS payload to be inscribed' },
+                },
+              },
+              statusUrl: { type: 'string', description: 'URL to check order status' },
+            },
+          },
+        },
+      },
+    ],
+  })
+})
+
 // Main inscription endpoint
 app.post('/inscribe', async (c) => {
-  // x402 payment validation would go here
-  // For now, we'll process all requests
+  // x402 payment check
+  const paymentHeader = c.req.header('X-Payment')
+  const payTo = c.env.PAYMENT_ADDRESS || DEFAULT_PAYMENT_ADDRESS
+
+  if (!paymentHeader) {
+    const nonce = crypto.randomUUID().replace(/-/g, '')
+    return c.json({
+      maxAmountRequired: SERVICE_FEE_USTX.toString(),
+      resource: '/inscribe',
+      payTo,
+      network: 'mainnet',
+      nonce,
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      tokenType: 'STX',
+      description: 'Pay service fee to create inscription order',
+    }, 402)
+  }
 
   const req = await c.req.json<InscribeRequest>()
 
